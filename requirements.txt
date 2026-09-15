@@ -1,10 +1,19 @@
-streamlit>=1.33,<2
-requests>=2.31
-pytz>=2024.1
-yfinance>=0.2.40
-pandas>=2.0
-oandapyV20>=0.6.6
-pydantic>=2.0
-urllib3>=1.26.9
-python-dotenv>=1.0          # mission 15/09/2026 : chargement .env (credentials.py + external_sources.py uniquement)
-beautifulsoup4>=4.12        # chemin BoE PRIMAIRE Bank-Rate.asp depuis P0-2 (le scrape dégrade en IADB si absent)
+# BLUESTAR Macro Briefing — dépendances épinglées (v6.3 [B2], 15/09/2026).
+# Chaque version ci-dessous est EXACTEMENT celle de l'environnement où la
+# suite complète (pytest 63/63 + AppTest boot + e2e + rendus live) est verte
+# le 15/09/2026 ; le CI GitHub Actions réinstalle ce fichier tel quel et rejoue
+# la suite offline à chaque push. Un rebuild Streamlit Cloud résout donc
+# désormais le MÊME graphe que celui vérifié — plus de « ça marchait lundi ».
+# oandapyV20 : RETIRÉ (dépendance fantôme — zéro import dans le code,
+# commenté « no oandapyV20 » dans oanda_strength/oanda_data ; l'app tourne
+# sans elle depuis toujours, requests fait tout le travail Oanda).
+streamlit==1.63.0
+requests==2.34.2
+pytz==2026.3.post1
+yfinance==1.7.0
+pandas==3.0.5
+pydantic==2.13.4
+urllib3==2.7.0
+python-dotenv==1.2.3       # chargement .env (credentials.py + external_sources.py uniquement)
+beautifulsoup4==4.15.0     # chemin BoE PRIMAIRE Bank-Rate.asp (dégradation IADB si absent)
+# --- hors requirements (dev/CI only, version de l'env validé) : pytest==9.1.1
