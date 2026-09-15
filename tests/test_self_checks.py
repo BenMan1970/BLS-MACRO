@@ -65,7 +65,14 @@ def test_calendar_contract():
 
 def test_session_and_fmt():
     assert get_session(datetime(2026, 6, 28, 10, tzinfo=UTC)) == "LONDON"
-    assert fmt_until(0.0) == "PASSED"
+    # Dette de TEST épurée v6.2 : « PASSED » était le contrat d'affichage
+    # ANTÉRIEUR À LA v5. fmt_until est byte-identique dans la copie pristine
+    # (prouvé 15/09/2026) — ce n'est pas une fonction v10 (aucune contrainte
+    # de réplique) et le statut « passé » est porté par EventStatus /
+    # is_upcoming, pas par l'horloge. Ce verrou épingle la sémantique réelle
+    # aux trois bornes du zéro : 0.0 = instant de publication (« 0m ago »).
+    assert fmt_until(0.0) == "0m ago"
+    assert fmt_until(-0.5) == "30m ago"
     assert fmt_until(0.5) == "30m"
 
 
@@ -101,8 +108,19 @@ def test_max_3_and_render_no_placeholders():
     ctx = build_context(now, snap, cal, overrides=overrides, mode="Aggressive")
     assert len(ctx.priority_assets) <= 3
     html = render_html(ctx)
-    # Weekend (28/06/2026 is a Sunday) -> operational note must be present.
-    assert "NOTE OPÉRATIONNELLE" in html
+    # Dette de TEST épurée v6.2 : la note opérationnelle automatique du
+    # week-end a été RETIRÉE par design bien avant la mission de correction
+    # (prouvé sur copie pristine : macro_engine ne la connaît que comme
+    # ``operational_note=overrides.get("operational_note")``, l.2262 — saisie
+    # opérateur, pas un calcul calendrier). Le contrat vivant vérifié ici :
+    # (1) sans override, aucune note ; (2) avec override, la note passe
+    # intégralement dans le HTML.
+    assert "NOTE OPÉRATIONNELLE" not in html
+    ctx_note = build_context(now, snap, cal, mode="Aggressive",
+                             overrides={**overrides,
+                                        "operational_note": "marché fermé (test)"})
+    assert "NOTE OPÉRATIONNELLE" in render_html(ctx_note)
+    assert "marché fermé (test)" in render_html(ctx_note)
     assert validate_html(html) == [] or all(i.severity != "ERROR" for i in validate_html(html))
     issues = validate_context(ctx)
     assert all(i.severity != "ERROR" for i in issues), [i.message for i in issues]
