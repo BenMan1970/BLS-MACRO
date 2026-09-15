@@ -4,6 +4,83 @@ Version 5 -- réparation + consolidation mono-fichier, câblée sur
 ``config.py`` / ``macro_engine.py`` / ``models.py`` / ``app.py``.
 
 =============================================================================
+v6.1 (15/09/2026) — CORRECTIFS POST-AUDIT EXTERNE (« audit Opus »), CHAQUE
+POINT MESURÉ AVANT ÊTRE ADMIS. Zéro régression décisionnelle : see tests
+``tests/test_calendar_locks_v61.py``.
+=============================================================================
+
+[M1] RÉPLIQUE v10 RESTAURÉE (le seul écart prouvé avec l'autorité ENGINE.V10.py)
+     * ``_TIER_S`` : ajout de ``"refinancing"`` — présent dans v10 (l.251),
+       absent ici. Sans lui, « Main Refinancing Rate » (décision BCE) = tier S
+       côté Desk mais NONE côté Macro : divergence possible de blackout sur
+       le jour le plus risqué de la zone euro. Mesuré 15/09 :
+       classify_tier("Main Refinancing Rate") → NONE avant, S après.
+     * Promotion NONE→A des événements HIGH : v10.CalendarEvent._derive
+       (l.335-336) promeut tout événement HIGH au nom non classé en tier A.
+       Ici seule la LABELLING change (fenêtre défaut (2,24) == fenêtre A) ;
+       le verdict booléen de blackout est bit-for-bit identique. Effet
+       visible : « tier NONE » → « tier A » dans les motifs d'évitement
+       (ex. Claimant Count Change GBP), conforme à ce que le Desk énonce.
+
+[M2] BANDEAU DE TRONCATURE : [F1] RECONNAÎT UNE PRÉMISSE FAUSSE (audit B1)
+     La fusion thisweek+nextweek supposait l'existence d'un flux « nextweek ».
+     Mesuré le 15/09/2026 (5 probes espacés de ~12 h + famille complète) :
+     ff_calendar_nextweek/lastweek/thismonth/nextmonth .json et nextweek.xml
+     → TOUS 404 ; seul thisweek existe (.json/.xml/.csv). Conséquence : le
+     bandeau « tronqué à Xh » se levait 7 jours sur 7 (horizon max mesuré au
+     dimanche : 130,2 h < 168 h) — exactement le bruit permanent que [F1]
+     prétendait supprimer — plus une requête HTTP morte par cycle.
+     → v6.1 : la source publie une semaine glissante dim→sam ; c'est sa
+       nature, pas une anomalie. ``_horizon_diagnosis`` distingue
+       « nominal_weekly » (thisweek ok, horizon court) de « degraded »
+       (thisweek en erreur alors qu'un second flux répond) et « unreachable ».
+       Le drapeau rouge ``feed_horizon_truncated`` ne se lève plus QUE sur
+       « degraded ». L'horizon réel reste exposé (``feed_horizon_h`` +
+       ``feed_horizon_state``) et la fusion multi-flux reste opérationnelle :
+       réactivable par ``BLUESTAR_SOURCE_URL_NEXT`` si l'éditeur publie un
+       jour un second flux. Aucun code de fusion supprimé.
+
+[M3] STATUT DE PARCOURS EXPORTÉ (audit B5) : les lignes legacy portent
+     désormais ``forecast_status`` / ``previous_status`` (le parse_status
+     calculé puis jeté depuis la v3). ``_NUM_RE`` accepte ``≤ ≥ ±`` (les
+     préfixes que macro_engine._parse_feed_rate sait déjà lire) : les deux
+     vocabulaires convergent sur ces cas. Le contenu économique du flux FF
+     actuel ne change pas de hash (aucune de ces chaînes dans le feed —
+     verrouillé par test). Le format « 3,50–3,75% » (plage) reste
+     UNPARSEABLE ici et n'est traité que par macro_engine : écart résiduel
+     DOCUMENTÉ, non corrigé (déviner une médiane n'est pas normaliser).
+
+[M4] GROUPEMENT PRESSE BoJ (audit B7) : fenêtre d'anciadité conférence→
+     décision portée à 240 min pour JPY (mesuré : décision 02:30 UTC,
+     conférence 05:30 UTC = écart 3,0 h > 120 min) ; 120 min partout
+     ailleurs (FOMC 14:00→14:30 verrouillé). ``release_group_id`` entre dans
+     le content_hash [F5] : c'est le seul champ dont ce correctif fait bouger
+     le hash — sans consommateur décisionnel ni affichage dans le rapport.
+
+[M5] HYGIÈNE (audits B9 + mineurs) :
+     * ``view_hash`` ajouté en métadonnées (alias explicite de content_hash,
+       qui est un hash de VUE fenêtrée, pas de contenu : mesuré, il change à
+       T+52 h sur un flux octet-pour-octet identique quand un événement
+       franchit la borne 72 h. La stabilité inter-apps reste
+       ``source.payload_sha256``.)
+     * ``to_legacy_payload`` ne retourne plus ``events`` et ``events_engine``
+       comme le MÊME objet list.
+     * docstring ``institutional.fetch_macro_surprise`` : « actual present in
+       the production calendar layer » → FAUX mesuré (0/104 lignes JSON avec
+       clé actual, XML sans <actual>) ; corrigé sur place.
+
+NON CORRIGÉS VOLONTAIREMENT (documentés, décisions hors périmètre zero-régression) :
+     * B2 (filtrage HIGH à l'ingestion, 16/104 retenu) : changement de
+       contrat desk, pas un bug ; le policy et [S2] le documentent déjà.
+     * B8 (sessions LON/NY/TKY seulement → NZD GDP 22:45Z « OFF ») : aucun
+       consommateur dans le briefing (la « Session idéale » des cartes est
+       une chaîne statique macro_engine l.1893) ; addition de Wellington/
+       Sydney = enrichissement à arbitrer.
+     * Commentaire erroné de renderer.py l.243 (« Le flux FF n'a pas de
+       Medium » — mesuré : 10 Medium dans le flux) : renderer = zone
+       intouchable de la mission ; signalé à son owner.
+
+=============================================================================
 CE QUE LA v5 CORRIGE PAR RAPPORT À LA v4 (chaque point vérifié sur le
 briefing HTML du 08/09/2026)
 =============================================================================
@@ -20,6 +97,12 @@ briefing HTML du 08/09/2026)
        roulant de 7 à 14 jours, donc >= 168h en permanence. Le drapeau ne se
        lève plus que si le second flux est réellement indisponible -- et il
        redevient alors un vrai signal.
+       ⚠ RECTIFIÉ v6.1 (mesure 15/09/2026) : ``ff_calendar_nextweek`` n'a
+       JAMAIS été publié par l'éditeur (famille complète → HTTP 404). Le
+       bandeau restait donc permanent (7j/7) et chaque cycle émettait un GET
+       mort. Voir [M2] en tête de fichier : le drapeau ne se lève plus que
+       sur un flux réellement dégradé ; la fusion multi-flux reste
+       opérationnelle via ``BLUESTAR_SOURCE_URL_NEXT``.
 
 [F2] INCOHÉRENCE DE FUSEAU DANS LE HTML (1 heure d'écart)
      ``DEFAULT_DISPLAY_TZ = "Africa/Casablanca"`` (UTC+1) alors que toute
@@ -215,7 +298,7 @@ logger = logging.getLogger(__name__)
 # SECTION 1 -- NORMALISATION
 # =============================================================================
 
-SCHEMA_VERSION = "2.2.0"  # 2.2.0 : additif SourceInfo.feed_status + CoverageInfo (synthèse v6, cf. en-tête)
+SCHEMA_VERSION = "2.2.1"  # 2.2.0 : additif feed_status+CoverageInfo (v6) ; 2.2.1 : v6.1 audit externe (cf. en-tête)
 PAIR_MAPPING_METHOD = "static_currency_membership_v1"
 SESSION_POLICY_VERSION = "exchange_local_dst_aware_v1"
 NUMERIC_PARSER_VERSION = "ff_numeric_v2"
@@ -385,7 +468,11 @@ def parse_source_datetime(raw: Any) -> datetime:
 
 # --- Parseur numérique -------------------------------------------------------
 _NUM_RE = re.compile(
-    r"^([<>~≈]?)\s*(-?[\d]+(?:[.,][\d]+)*)\s*([KMBT]?)\s*(%?)$", re.IGNORECASE
+    # [M3 v6.1] ≤ ≥ ± ajoutés : mêmes préfixes que macro_engine._parse_feed_rate
+    # (audit B5 — deux parseurs, deux vocabulaires = dérive silencieuse). Le
+    # feed FF actuel n'émet que < > ~ et nombres nus : zéro impact sur le
+    # contenu économique (donc sur le content_hash) — verrouillé par test.
+    r"^([<>~≈≤≥±]?)\s*(-?[\d]+(?:[.,][\d]+)*)\s*([KMBT]?)\s*(%?)$", re.IGNORECASE
 )
 _SCALES = {"": 1.0, "K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 _THOUSANDS_COMMA = re.compile(r"^-?\d{1,3}(?:,\d{3})+$")
@@ -526,6 +613,39 @@ def fmt_until(hours: float) -> str:
 # [F1] Horizon de veille. Doit rester synchronisé avec v10.WATCH_MAX_H (même
 # dette de duplication assumée que TIER_WINDOWS).
 FF_WATCH_HORIZON_H = 168.0
+
+
+def _horizon_diagnosis(feed_horizon_h: Optional[float],
+                       feed_status: Dict[str, Any]) -> Tuple[str, bool]:
+    """[M2 v6.1] « Flux normalement court » != « flux réellement dégradé ».
+
+    La source FF ne publie qu'une semaine glissante dimanche→samedi (mesuré
+    15/09/2026 : famille nextweek/lastweek/thismonth/nextmonth → HTTP 404,
+    thisweek seul vivant). L'horizon utile décroît donc structurellement de
+    ~154h (dimanche) à ~0h (samedi) : ce n'est PAS une anomalie et le bandeau
+    rouge ne doit plus le signaler (il sortait 7 jours sur 7).
+
+    Retourne ``(state, alerte_rouge)`` :
+      * ``("unreachable", False)``  — horizon non mesurable (flux vide) ;
+      * ``("degraded", True)``      — thisweek en échec alors qu'un autre
+        flux a répondu (seul cas où « ne pas voir au-delà du flux » devient
+        une anomalie au sens v4/v5) ;
+      * ``("nominal_weekly", False)`` — thisweek ok, horizon < 168h : nature
+        de la source ; mention neutre (logger.info), pas d'alerte ;
+      * ``("full_watch_horizon", False)`` — ≥ 168h (second flux réellement
+        publié, ex. via BLUESTAR_SOURCE_URL_NEXT).
+
+    Cas ``feed_status`` vide (raw_data injectée, tests/rejeux) : la donnée
+    fournie est considérée de confiance → pas de dégradation affirmée.
+    """
+    if feed_horizon_h is None:
+        return "unreachable", False
+    tw = str((feed_status or {}).get("thisweek") or "")
+    if feed_status and tw and not tw.startswith("ok"):
+        return "degraded", True
+    if feed_horizon_h < FF_WATCH_HORIZON_H:
+        return "nominal_weekly", False
+    return "full_watch_horizon", False
 
 # [F7] Dérivé de config au lieu d'être dupliqué : cohérent avec le
 # ``since_h=72`` de macro_engine._events_for_ccys (gating de blackout) et
@@ -781,6 +901,11 @@ _LABOR_KEYWORDS = (
     "non-farm employment change", "unemployment rate", "average hourly earnings",
     "employment change", "claimant count",
 )
+# [M4 v6.1] Fenêtre rattachement conférence→décision, par devise (minutes).
+# Mesures 15/09/2026 sur flux live : BoJ 02:30→05:30 UTC (3,0 h) ; FOMC
+# 18:00→18:30 UTC (0,5 h). Toute autre banque reste à 120 min (comportement
+# d'origine, verrouillé par test).
+_PRESSER_ANCHOR_WINDOW_MIN: Dict[str, float] = {"JPY": 240.0}
 
 
 def _match(title: str, keywords: Sequence[str]) -> bool:
@@ -792,7 +917,10 @@ def assign_release_groups(rows: List[Dict[str, Any]]) -> None:
     """Groupe (mutation in place de 'release_group_*') :
       1. publications strictement simultanées d'un même pays,
       2. conférence de presse rattachée à la décision de taux du même pays
-         survenue dans les 120 minutes précédentes."""
+         survenue dans la fenêtre d'ancienneté (120 min par défaut ;
+         [M4 v6.1] 240 min pour JPY — mesuré 15/09/2026 sur le flux live :
+         décision BoJ 02:30 UTC → conférence 05:30 UTC = 3,0 h, hors de la
+         fenêtre v6 ; FOMC 18:00→18:30 UTC = 30 min, dans la fenêtre)."""
     buckets: Dict[Tuple[str, datetime], List[Dict[str, Any]]] = {}
     for row in rows:
         buckets.setdefault((row["currency"], row["scheduled_at_utc"]), []).append(row)
@@ -811,7 +939,8 @@ def assign_release_groups(rows: List[Dict[str, Any]]) -> None:
 
         if is_presser and ccy in anchors:
             anchor_time, anchor_gid = anchors[ccy]
-            if timedelta(0) <= (when - anchor_time) <= timedelta(minutes=120):
+            window_min = _PRESSER_ANCHOR_WINDOW_MIN.get(ccy, 120.0)
+            if timedelta(0) <= (when - anchor_time) <= timedelta(minutes=window_min):
                 gid, gtype = anchor_gid, ReleaseGroupType.CENTRAL_BANK_DECISION
 
         if gid is None and (is_cb or len(members) > 1):
@@ -1291,8 +1420,13 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
             "impact": e.impact.value.lower(),
             "forecast": _disp(e.forecast),
             "forecast_value": e.forecast.value,
+            # [M3 v6.1] statut de parsing exporté (calculé puis jeté depuis
+            # la v3 — audit B5). Additif : models.from_enriched les ignore,
+            # le content_hash ne les projette pas. Consommateurs : diagnostics.
+            "forecast_status": e.forecast.parse_status,
             "previous": _disp(e.previous),
             "previous_value": e.previous.value,
+            "previous_status": e.previous.parse_status,
             "actual": _disp(e.actual),
             "actual_value": e.actual.value,
             "actual_status": e.actual_status.value,
@@ -1314,6 +1448,11 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
             "schema_version": f"legacy-1.2.0+core-{payload.schema_version}",
             "generated_at_utc": iso_z(payload.generated_at_utc),
             "content_hash": payload.content_hash,
+            # [M5 v6.1] content_hash est un hash de VUE : il porte la fenêtre
+            # 72h/168h et bouge quand un événement franchit une borne (mesuré :
+            # T vs T+52h, flux identique octet pour octet). Pour la stabilité
+            # inter-apps, comparer source.payload_sha256. Alias explicite :
+            "view_hash": payload.content_hash,
             "content_hash_method": payload.content_hash_method,
             "source": payload.source.provider,
             "source_url": payload.source.url,
@@ -1358,7 +1497,11 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
             "coverage_note": render_coverage_note(payload.coverage, policy.impact_levels),
         },
         "events": rows,
-        "events_engine": rows,
+        # [M5 v6.1] copie distincte : la v5 renvoyait le MÊME objet list sous
+        # deux clés (mesuré : events is events_engine → True). build_calendar
+        # réassigne les deux dès l'appel suivant, mais un appelant direct de
+        # to_legacy_payload mutait l'un en écrivant l'autre.
+        "events_engine": list(rows),
         "summary_by_day": {k: summary[k] for k in sorted(summary)},
     }
 
@@ -1373,7 +1516,11 @@ def to_legacy_payload(payload: CalendarPayload, now_utc: datetime) -> Dict[str, 
 
 _TIER_S = ("non-farm", "nonfarm", "nfp", "fomc", "cpi", "cash rate",
            "bank rate", "rate statement", "interest rate", "monetary policy",
-           "funds rate", "policy rate")
+           "funds rate", "policy rate",
+           # [M1 v6.1] réplique v10 l.251 : sans "refinancing", la décision
+           # BCE « Main Refinancing Rate » tombait en NONE ici alors que le
+           # Desk la classe S. Rétabli à l'identique.
+           "refinancing")
 _TIER_A = ("gdp", "pmi", "adp", "pce", "employment change", "unemployment",
            "average hourly", "retail sales", "ppi")
 _TIER_B = ("speaks", "speech", "press conference", "testifies", "testimony")
@@ -1398,18 +1545,30 @@ def classify_tier(event_name: str) -> str:
     return "NONE"
 
 
-def is_blackout(event_name: str, hours_until: float) -> tuple:
+def is_blackout(event_name: str, hours_until: float, impact: str = "high") -> tuple:
     """True si l'événement place sa devise en fenêtre de blackout, avant OU
     après l'annonce — réplique de v10.CalendarData.bucket().
 
     ``hours_until`` suit la convention de ``build_calendar()`` : positif =
     futur, négatif = déjà passé. Retourne ``(bloqué: bool, tier: str)``.
 
+    [M1 v6.1] Promotion ``NONE``→``A`` des événements HIGH, réplique exacte
+    de v10.CalendarEvent._derive (ENGINE.V10.py l.335-336 : « un event
+    explicitement HIGH au feed mais au nom non classé ne doit pas être
+    invisible du scoring »). La fenêtre réellement appliquée est inchangée
+    ((2,24) défaut == (2,24) tier A) : seul le LABEL retourné devient
+    conforme à l'énoncé du Desk. ``impact`` n'est pas passé par les appelants
+    actuels (macro_engine l.1674) parce que la politique d'ingestion ne
+    retient QUE des High ; un appelant élargissant la politique devra passer
+    l'impact réel (comportement v10 : non-HIGH → pas de promotion).
+
     NB : la fenêtre passée la plus large est 48h (tier S) — d'où le
     ``since_h=72`` de macro_engine._events_for_ccys, strictement suffisant,
     et d'où ``window_past_hours = RESIDUAL_RISK_WINDOW_H = 72``.
     """
     tier = classify_tier(event_name)
+    if tier == "NONE" and str(impact).lower() == "high":
+        tier = "A"
     before, after = TIER_WINDOWS.get(tier, DEFAULT_TIER_WINDOW)
     return (-after <= hours_until <= before), tier
 
@@ -1430,16 +1589,20 @@ _THISWEEK_URL = os.getenv("BLUESTAR_SOURCE_URL", _C.FF_JSON_URL)
 
 
 def _derive_nextweek_url(thisweek_url: str) -> Optional[str]:
-    """[F1] Dérive l'URL du flux de la semaine suivante depuis celle de la
-    semaine courante (``ff_calendar_thisweek.json`` →
-    ``ff_calendar_nextweek.json``). Aucune URL codée en dur : si le nom du
-    flux change côté config, la dérivation suit ou se désactive proprement."""
-    override = os.getenv("BLUESTAR_SOURCE_URL_NEXT")
-    if override:
-        return override
-    if "thisweek" in thisweek_url:
-        return thisweek_url.replace("thisweek", "nextweek")
-    return None
+    """[F1→M2 v6.1] URL du flux « semaine suivante ».
+
+    Mesuré le 15/09/2026 (audit externe B1, re-vérifié 5 probes sur ~12 h) :
+    l'éditeur ne publie AUCUN second flux — ff_calendar_nextweek/lastweek/
+    thismonth/nextmonth (.json/.xml) → HTTP 404nginx, seul thisweek vit.
+    La substitution automatique « thisweek→nextweek » n'émettait donc qu'une
+    requête morte par cycle, avec un feed_status "absent_404" permanent.
+
+    La FUSION multi-flux de [F1] reste entièrement opérationnelle (mécanisme
+    inchangé dans fetch_raw) : il suffit de définir ``BLUESTAR_SOURCE_URL_NEXT``
+    (config Streamlit / .env) si un second flux devient disponible. Rien n'est
+    codé en dur, rien n'est supprimé.
+    """
+    return os.getenv("BLUESTAR_SOURCE_URL_NEXT") or None
 
 
 SOURCE_URL = _THISWEEK_URL                      # compat v3/v4
@@ -1735,18 +1898,28 @@ def build_calendar(
     # --- Couverture réelle du flux, avant tout filtrage --------------------
     feed_start, feed_end, impact_counts, holidays = _feed_bounds(raw_data)
     feed_horizon_h = ((feed_end - now_utc).total_seconds() / 3600.0) if feed_end else None
-    feed_truncated = feed_horizon_h is not None and feed_horizon_h < FF_WATCH_HORIZON_H
+    # [M2 v6.1] Diagnostic d'horizon : la source ne publie qu'une semaine
+    # glissante dim→sam (mesuré 15/09/2026, cf. _derive_nextweek_url). Un
+    # horizon < 168h quand thisweek répond est NOMINAL ; le bandeau rouge ne
+    # se lève plus que sur un flux PRINCIPAL réellement dégradé.
+    _fs = dict(meta.get("feed_status") or {})
+    horizon_state, feed_truncated = _horizon_diagnosis(feed_horizon_h, _fs)
     if not raw_data:
         # Flux injoignable : l'horizon n'est pas « tronqué », il est INEXISTANT.
         # Ne pas confondre les deux dans le HTML — reachable=False le dit déjà.
-        feed_truncated = False
+        horizon_state, feed_truncated = "unreachable", False
     elif feed_truncated:
         logger.warning(
-            "FF feed horizon %.1fh < %.0fh — fenêtre WATCH non vérifiable au-delà "
-            "du flux (couverture %d/%d) ; un silence calendaire n'est PAS une "
-            "absence de risque",
-            feed_horizon_h, FF_WATCH_HORIZON_H,
-            int(meta.get("feeds_ok") or 0), int(meta.get("feeds_total") or 0))
+            "FF feed PRINCIPAL dégradé (thisweek=%s) — horizon mesuré %.1fh ; "
+            "un silence calendaire n'est PAS une absence de risque",
+            _fs.get("thisweek"), feed_horizon_h)
+    elif horizon_state == "nominal_weekly":
+        logger.info(
+            "FF feed horizon %.1fh < %.0fh — couverture hebdomadaire nominale "
+            "de la source (roulante dim→sam), flux non dégradé : la borne 168h "
+            "n'est pas atteignable avec ce fournisseur et ne constitue plus "
+            "une alerte",
+            feed_horizon_h, FF_WATCH_HORIZON_H)
 
     # --- Source + payload canonique ---------------------------------------
     urls_used = tuple(meta.get("urls") or (SOURCE_URLS if fetched else ()))
@@ -1849,6 +2022,9 @@ def build_calendar(
         "feed_end_utc": iso_z(feed_end) if feed_end else None,
         "feed_horizon_h": round(feed_horizon_h, 1) if feed_horizon_h is not None else None,
         "feed_horizon_truncated": feed_truncated,
+        # [M2 v6.1] nature de l'horizon, pour diagnostics/logging :
+        # unreachable | degraded | nominal_weekly | full_watch_horizon
+        "feed_horizon_state": horizon_state,
         "feed_watch_horizon_h": FF_WATCH_HORIZON_H,
         "feed_impact_counts": impact_counts,
         "raw_duplicates_dropped": int(meta.get("raw_duplicates_dropped") or 0),

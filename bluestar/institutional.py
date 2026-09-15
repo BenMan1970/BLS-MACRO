@@ -399,9 +399,13 @@ def fetch_macro_surprise(currency: str = "USD", raw_events: Optional[list] = Non
 
     Two honest modes (auto-selected, whichever data is present):
       * REALIZED surprise: mean of (actual-forecast)/|forecast| over released
-        events — requires ``actual`` (present in the production calendar layer).
+        events — requires ``actual``. VERIFIED 15/09/2026 (external audit B3):
+        the production FF weekly feed NEVER carries it (0/104 JSON rows have
+        an "actual" key; the XML variant has no <actual> either), so this
+        mode is inert with the current source — do not pretend otherwise.
       * EXPECTATIONS drift: mean of (forecast-previous)/|previous| over upcoming
-        events — used when no actuals are out yet, so the field is never blank.
+        events — in practice the ONLY mode reachable from this feed, hence
+        the "US Macro Momentum" label. Field stays never blank.
 
     Pass ``raw_events`` = the engine's already-enriched events (dicts or
     ``MacroEvent``). Falls back to the bare weekly feed (forecast/previous only).
