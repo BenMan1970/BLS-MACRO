@@ -163,7 +163,25 @@ vix = market.gauge("VIX")
 c4.metric("VIX", vix.display, vix.trend or None)
 
 cal_ok = meta.get("reachable", False)
+# v6.3 [B3] : le voyant existant ne disait que « atteignable / injoignable ».
+# Il expose maintenant la NATURE de l'horizon du flux (nominal_weekly /
+# degraded / unreachable / full_watch_horizon, posé par calendar_layer [M2]),
+# sa portée en heures, et le nb de flux OK — pour qu'un week-end « nominal
+# court » ne soit jamais confondu avec une panne. Aucune donnée inventée :
+# chaque champ vient déjà du metadata ; si un champ manque (ancien payload),
+# l'affichage se dégrade proprement en « ? ». Zéro fetch additionnel.
+_hstate = meta.get("feed_horizon_state") or "?"
+_hh = meta.get("feed_horizon_h")
+_fok = meta.get("feeds_ok")
+_ftot = meta.get("feeds_total")
+_state_lbl = {"nominal_weekly": "hebdo nominal",
+              "degraded": "dégradé",
+              "unreachable": "injoignable",
+              "full_watch_horizon": "168 h couverts"}.get(_hstate, _hstate)
+_flux = f" · flux {_fok}/{_ftot}" if (_fok is not None and _ftot) else ""
+_horizon = f" · horizon {_hh:.0f} h" if isinstance(_hh, (int, float)) else ""
 st.caption(("✅ Forex Factory atteignable · " if cal_ok else "⚠️ Forex Factory injoignable (fallback vide) · ")
+           + (f"📆 {_state_lbl}{_horizon}{_flux} · ")
            + ("✅ Marché yfinance OK" if vix.available else "⚠️ Marché yfinance indisponible — champs [N/A]"))
 
 st.divider()
