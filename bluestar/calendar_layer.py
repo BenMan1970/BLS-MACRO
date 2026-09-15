@@ -4,6 +4,41 @@ Version 5 -- réparation + consolidation mono-fichier, câblée sur
 ``config.py`` / ``macro_engine.py`` / ``models.py`` / ``app.py``.
 
 =============================================================================
+v6.2 (15/09/2026, 14:05) — gate « production-ready » : suite de tests
+entièrement verte + dernière correction de véracité de donnée restante.
+=============================================================================
+
+[B8] SESSIONS ANZ : WELLINGTON (05:00-14:00 NZST/NZDT) et SYDNEY
+     (07:00-15:00 AEST/AEDT) rejoignent la table des places. Mesure
+     d'origine : « GDP q/q » NZD mercredi 22:45 UTC = 10:45 Wellington /
+     08:45 Sydney, cœur de séance étiqueté « OFF » par la table à trois
+     centres. Le bloc asiatique de ``classify_session`` (enum ``Session``
+     INCHANGÉE) absorbe les deux nouveaux centres. Contrat d'impact :
+     zéro. La session n'est projetée NI dans le content_hash, NI dans le
+     rapport (la « Session idéale » des cartes est une chaîne statique de
+     macro_engine l.1893) ; seuls l'expander calendrier et les futurs
+     consommateurs ``session``/``active_market_centers`` voient la donnée
+     devenir vraie. ``get_session()`` (API de compat v4, UTC-only,
+     appelée par aucun chemin de données) reste volontairement intacte.
+
+[B2] STATUT OFFICIEL — NON IMPLÉMENTABLE EN « OPTION A » SANS TOUCHER UNE
+     ZONE INTERDITE, documenté après lecture de la plomberie macro :
+     ``build_catalysts`` découpe les catalyseurs par PRIORITÉ TEMPORELLE
+     (CRITICAL/HIGH ≤48h ; MEDIUM 48-168h) et non par impact — le bucket
+     « medium » du rapport désigne donc des High@>48h, et tout Medium FF
+     ingéré arriverait en ``events_engine``, la liste unique qui alimente
+     AUSSI scoring, blackout et regime (macro_engine l.2121-2150, 2177).
+     Un « Medium affichage seul » exigerait soit une nouvelle liste + un
+     nouveau gabarit renderer (zone gelée), soit des gardes d'impact dans
+     macro_engine (zone verrouillée P0-3 + divergence avec bucket() v10 qui
+     ne blackoute QUE les High), soit la bascule coordonnée du hash partagé
+     avec l'app TA. Chiffré, arbitré, REPOUSSSÉ — pas oublié : 10 Medium
+     cette semaine, dont Retail Sales USD jeudi (= 62 % de volume
+     informationnel en plus des 16 High), contre 3 chemin de code à rouvrir.
+     La recommandation au desk reste l'option « Medium en annexe dédiée »,
+     qui nécessite un ticket renderer.
+
+=============================================================================
 v6.1 (15/09/2026) — CORRECTIFS POST-AUDIT EXTERNE (« audit Opus »), CHAQUE
 POINT MESURÉ AVANT ÊTRE ADMIS. Zéro régression décisionnelle : see tests
 ``tests/test_calendar_locks_v61.py``.
@@ -298,9 +333,9 @@ logger = logging.getLogger(__name__)
 # SECTION 1 -- NORMALISATION
 # =============================================================================
 
-SCHEMA_VERSION = "2.2.1"  # 2.2.0 : additif feed_status+CoverageInfo (v6) ; 2.2.1 : v6.1 audit externe (cf. en-tête)
+SCHEMA_VERSION = "2.2.2"  # 2.2.0 feed_status+CoverageInfo ; 2.2.1 v6.1 audit ; 2.2.2 v6.2 sessions ANZ + suite verte
 PAIR_MAPPING_METHOD = "static_currency_membership_v1"
-SESSION_POLICY_VERSION = "exchange_local_dst_aware_v1"
+SESSION_POLICY_VERSION = "exchange_local_dst_aware_v2"  # v2 : +WELLINGTON/SYDNEY (v6.2)
 NUMERIC_PARSER_VERSION = "ff_numeric_v2"
 CONTENT_HASH_METHOD = "economic_projection_v2"
 
@@ -325,9 +360,16 @@ DEFAULT_DISPLAY_TZ = DISPLAY_TIMEZONE  # alias de compatibilité v4
 ABSENT_DISPLAY = "—"
 
 SESSION_HOURS = {
+    # [B8 v6.2] WELLINGTON + SYDNEY ajoutés (audit externe B8, mesuré
+    # 15/09/2026) : sans eux, le GDP q/q NZD de mercredi 22:45 UTC —
+    # 10:45 à Wellington, 08:45 à Sydney, cœur de la séance ANZ — était
+    # étiqueté « OFF ». Fenêtres = conventions de place en heure LOCALE de
+    # chaque centre (DST gérée par ZoneInfo, comme LONDON/NEW_YORK/TOKYO).
     "LONDON": (TZ_LONDON, 8 * 60, 16 * 60 + 30),
     "NEW_YORK": (TZ_NEW_YORK, 8 * 60, 17 * 60),
     "TOKYO": (TZ_TOKYO, 8 * 60, 17 * 60),
+    "WELLINGTON": (ZoneInfo("Pacific/Auckland"), 5 * 60, 14 * 60),
+    "SYDNEY": (ZoneInfo("Australia/Sydney"), 7 * 60, 15 * 60),
 }
 
 # [F7] Table fixe : ``strftime("%A")`` dépend de la locale du conteneur.
@@ -579,17 +621,21 @@ def classify_session(dt_utc: datetime) -> Tuple[Session, List[str]]:
         if start_min <= minutes < end_min:
             active.append(name)
 
-    has_ldn, has_ny, has_tky = ("LONDON" in active, "NEW_YORK" in active,
-                                "TOKYO" in active)
+    has_ldn = "LONDON" in active
+    has_ny = "NEW_YORK" in active
+    # [B8 v6.2] Wellington/Sydney rejoignent le bloc asiatique : l'enum
+    # Session est inchangée (aucun consommateur de « session » dans le
+    # briefing — voir en-tête v6.2 ; seule la véridicité de la donnée compte).
+    has_asia = bool({"TOKYO", "WELLINGTON", "SYDNEY"} & set(active))
     if has_ldn and has_ny:
         session = Session.OVERLAP_LONDON_NY
-    elif has_ldn and has_tky:
+    elif has_ldn and has_asia:
         session = Session.OVERLAP_ASIA_LONDON
     elif has_ny:
         session = Session.NEW_YORK
     elif has_ldn:
         session = Session.LONDON
-    elif has_tky:
+    elif has_asia:
         session = Session.ASIAN
     else:
         session = Session.OFF
