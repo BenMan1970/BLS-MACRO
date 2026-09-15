@@ -36,7 +36,8 @@ import requests
 
 from .config import YF_TICKERS, MARKET_FETCH_MAX_WORKERS
 from .models import Datum, Reliability, SourceStamp, MarketSnapshot, na_stamp
-from .external_sources import fetch_gdp_nowcast, fetch_vix_fred, fetch_us10y_fred, fetch_oil_fred
+from .external_sources import (fetch_gdp_nowcast, fetch_vix_fred,
+                               fetch_us10y_fred_full, fetch_oil_fred)
 from .credentials import oanda_creds
 
 # Institutional Intelligence layer (best-effort; zero-regression if absent).
@@ -572,9 +573,16 @@ def _fetch_instrument(
         return _fetch_yf_fallback(key, now_utc)
 
     if key == "US10Y":
-        uf = fetch_us10y_fred()
+        # v6.3 [B1] : une SEULE requête FRED (limit=40) sert à la fois la
+        # valeur de tête (contrat legacy inchangé, mêmes gardes) et la série
+        # DGS10 quotidienne oldest→newest consommée par l'overlay de
+        # corrélation. ATR reste volontairement None : FRED ne publie que des
+        # clôtures — un ATR-14 sur une seule valeur par jour serait fabriqué.
+        # Si FRED échoue ou si la série est <10 returns, la corrélation
+        # s'affiche [N/A] (chemin legacy) — jamais de valeur inventée.
+        uf = fetch_us10y_fred_full()
         if uf is not None:
-            val, obs_date, prev_val = uf
+            val, obs_date, prev_val, fred_closes = uf
             trend = _trend_str(val, prev_val) if prev_val is not None else ""
             return (
                 Datum(
@@ -585,7 +593,7 @@ def _fetch_instrument(
                                 url="https://fred.stlouisfed.org/series/DGS10"),
                     f"{fr_num(val, 2)}%", trend,
                 ),
-                None, [],
+                None, fred_closes,
             )
         logger.warning("US10Y: FRED indisponible — repli yfinance")
         return _fetch_yf_fallback(key, now_utc)

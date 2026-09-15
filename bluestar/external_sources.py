@@ -463,13 +463,47 @@ def fetch_us10y_fred() -> Optional[tuple[float, str, Optional[float]]]:
     observation for a trend. Returns ``(value, date_iso, prev_value_or_None)``
     or ``None`` on any failure — never raises. Same contract as
     ``fetch_vix_fred``.
+
+    v6.3: thin wrapper over ``fetch_us10y_fred_full`` — the value/date/
+    staleness/bounds validation is now single-sourced there, so the legacy
+    2-tuple-plus-prev contract is preserved byte-for-byte while the history
+    (used by the correlation overlay) rides on the SAME HTTP call. No second
+    request, no second validation path, nothing to diverge.
+    """
+    full = fetch_us10y_fred_full()
+    if full is None:
+        return None
+    return full[0], full[1], full[2]
+
+
+def fetch_us10y_fred_full(limit: int = 40):
+    """Same FRED DGS10 fetch, ONE HTTP call, extended result:
+    ``(value, date_iso, prev_value_or_None, closes)`` or ``None``.
+
+    ``closes`` is the observed daily series, oldest→newest (the exact
+    convention of ``MarketSnapshot.closes``), with missing FRED observations
+    (".") and out-of-bounds values dropped element-wise — the same plausibility
+    bound the headline value is gated on, applied per observation. The
+    headline gates (non-numeric last obs, >_US10Y_MAX_STALENESS_DAYS,
+    out-of-bounds value) all invalidate the WHOLE fetch exactly as
+    ``fetch_us10y_fred`` does, so downstream routing (yfinance fallback) is
+    unchanged. A short/empty closes list is returned as-is, never padded —
+    ``_pearson`` degrades to None on <10 returns and the card prints [N/A],
+    which is the honest outcome of a thin series.
+
+    Known limitation, deliberately not hidden: like the pre-existing DXY
+    correlation path, pairing with the FX closes is BY TAIL INDEX, not by
+    calendar date — US market holidays not shared by the FX session introduce
+    a small misalignment (same convention already in production for DXY;
+    date-aligned series would require a MarketSnapshot.closes schema change,
+    out of scope for this pass). Documented here and in the runbook.
     """
     api_key = _fred_api_key()
     if not api_key:
         return None
     params = {
         "series_id": _DGS10_SERIES, "api_key": api_key, "file_type": "json",
-        "sort_order": "desc", "limit": 2,
+        "sort_order": "desc", "limit": limit,
     }
     r = _get(_FRED_BASE, params=params)
     if r is None:
@@ -520,7 +554,17 @@ def fetch_us10y_fred() -> Optional[tuple[float, str, Optional[float]]]:
     prev_val = _num(obs[1]) if len(obs) > 1 else None
     if prev_val is not None and not (lo <= prev_val <= hi):
         prev_val = None
-    return val, dt_iso, prev_val
+    # closes: même source, mêmes bornes, point par point; obs est desc (tri
+    # demandé) → on renverse pour obtenir l'ordre oldest→newest attendu par
+    # MarketSnapshot.closes. Les trous "." / hors bornes sont écartés à
+    # l'élément, jamais interpolés.
+    closes = []
+    for o in obs:
+        v = _num(o)
+        if v is not None and lo <= v <= hi:
+            closes.append(v)
+    closes.reverse()
+    return val, dt_iso, prev_val, closes
 
 
 # ---------------------------------------------------------------------------
